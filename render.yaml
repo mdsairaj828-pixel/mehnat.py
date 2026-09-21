@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: mehnat-py
+    env: python
+    plan: free
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: OSINT_API_KEY
+        value: 0c1e5e85d561de4b9373361fbe6557ba
