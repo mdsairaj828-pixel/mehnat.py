@@ -1,113 +1,184 @@
 import os
-import telebot
 import requests
-import json
+import telebot
 from threading import Thread
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# --- DUMMY WEB SERVER FOR RENDER ---
-class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+
+# =========================
+# Render health-check server
+# =========================
+
+class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Bot is active and running smoothly!")
+        self.wfile.write(b"Telegram bot is running.")
 
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
-    print(f"Dummy server running on port {port}")
+    def log_message(self, format, *args):
+        return
+
+
+def run_server():
+    port = int(os.environ.get("PORT", "10000"))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"Health server running on port {port}")
     server.serve_forever()
 
-Thread(target=run_web_server, daemon=True).start()
-# -----------------------------------
 
-BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-API_KEY = os.getenv('OSINT_API_KEY')
-API_BASE_URL = 'https://onrender.com'
+Thread(target=run_server, daemon=True).start()
 
-if not BOT_TOKEN or not API_KEY:
-    print("Error: TELEGRAM_BOT_TOKEN ya OSINT_API_KEY set nahi hai!")
-    exit(1)
+
+# =========================
+# Environment variables
+# =========================
+
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+API_KEY = os.getenv("OSINT_API_KEY")
+
+# Your authorized API endpoint
+API_BASE_URL = os.getenv(
+    "API_BASE_URL",
+    "https://l34k-osint.onrender.com/search"
+)
+
+
+if not BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
+
+if not API_KEY:
+    raise RuntimeError("OSINT_API_KEY is missing")
+
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    welcome_text = (
-        "🔍 **OSINT Search Bot mein aapka swagat hai!**\n\n"
-        "Mujhe koi bhi target ya phone number bhejein (jaise: `919116224238`).\n"
-        "Main API se data check karke aapko result bataunga.\n\n"
-        "⚡ _Commands:_ \n"
-        "/start - Bot shuru karne ke liye"
+
+# =========================
+# /start
+# =========================
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.reply_to(
+        message,
+        "🤖 Bot is active.\n\n"
+        "Authorized API query bhejne ke liye message bhejein."
     )
-    bot.reply_to(message, welcome_text, parse_mode='Markdown')
+
+
+# =========================
+# /help
+# =========================
+
+@bot.message_handler(commands=["help"])
+def help_command(message):
+    bot.reply_to(
+        message,
+        "Commands:\n"
+        "/start - Bot start\n"
+        "/help - Help\n\n"
+        "API lookup ke liye sirf authorized/test data use karein."
+    )
+
+
+# =========================
+# API request
+# =========================
 
 @bot.message_handler(func=lambda message: True)
-def handle_osint_search(message):
-    query = message.text.strip()
-    
-    if query.startswith('/'):
-        if query not in ['/start', '/help']:
-            bot.reply_to(message, "❌ Galat command! Kripya sahi command chunein ya seedhe number bhejein.")
-            return
+def handle_message(message):
 
-    bot.send_chat_action(message.chat.id, 'typing')
-    status_msg = bot.reply_to(message, "⏳ API se data fetch kiya ja raha hai, kripya intezar karein...")
+    query = (message.text or "").strip()
+
+    if not query:
+        return
+
+    status = bot.reply_to(
+        message,
+        "⏳ API request process ho rahi hai..."
+    )
 
     try:
-        payload = {
-            'key': API_KEY,
-            'query': query
+        params = {
+            "key": API_KEY,
+            "query": query
         }
-        
+
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            "User-Agent": "TelegramBot/1.0"
         }
-        
-        response = requests.get(API_BASE_URL, params=payload, headers=headers, timeout=25)
-        
-        if response.status_code == 200:
-            raw_text = response.text
-            
-            if "<html" in raw_text.lower() or "414 request-uri too large" in raw_text.lower():
-                bot.send_message(message.chat.id, "❌ Server Error: API ne data ki jagah HTML error page return kiya hai. Kripya query check karein.")
-                return
 
-            try:
-                json_data = response.json()
-                clean_output = json.dumps(json_data, indent=4, ensure_ascii=False)
-            except:
-                clean_output = raw_text
+        response = requests.get(
+            API_BASE_URL,
+            params=params,
+            headers=headers,
+            timeout=25
+        )
 
-            if len(clean_output) > 3000:
-                filename = f"result_{query}.txt"
-                with open(filename, "w", encoding="utf-8") as f:
-                    f.write(clean_output)
-                
-                with open(filename, "rb") as doc:
-                    bot.send_document(
-                        message.chat.id, 
-                        doc, 
-                        caption=f"📋 Search Results for `{query}`\n(Data bada hone ke karan file format mein bheja gaya hai.)",
-                        parse_mode='Markdown'
-                    )
-                
-                if os.path.exists(filename):
-                    os.remove(filename)
-            else:
-                response_text = f"✅ **Search Results for:** `{query}`\n\n```text\n{clean_output}\n```"
-                bot.send_message(message.chat.id, response_text, parse_mode='Markdown')
-        else:
-            bot.send_message(message.chat.id, f"❌ API Error: Server ne error code {response.status_code} diya.")
-            
-    except requests.exceptions.Timeout:
-        bot.send_message(message.chat.id, "⏱️ API Timeout: Server respond nahi kar raha hai, kripya thodi der baad prayas karein.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Connection Error: {str(e)}")
-    finally:
+        print("API status:", response.status_code)
+
+        if response.status_code != 200:
+            bot.edit_message_text(
+                f"❌ API Error\nHTTP {response.status_code}",
+                message.chat.id,
+                status.message_id
+            )
+            return
+
+        # Try JSON first
         try:
-            bot.delete_message(message.chat.id, status_msg.message_id)
-        except:
+            data = response.json()
+            result = str(data)
+        except ValueError:
+            result = response.text
+
+        # Telegram message limit protection
+        if len(result) > 3500:
+            result = result[:3500] + "\n\n...[output truncated]"
+
+        bot.edit_message_text(
+            "✅ API Response:\n\n" + result,
+            message.chat.id,
+            status.message_id
+        )
+
+    except requests.exceptions.Timeout:
+        bot.edit_message_text(
+            "⏱️ API timeout. Server ne time par response nahi diya.",
+            message.chat.id,
+            status.message_id
+        )
+
+    except requests.exceptions.RequestException as e:
+        print("Request error:", e)
+
+        bot.edit_message_text(
+            "❌ API connection error.",
+            message.chat.id,
+            status.message_id
+        )
+
+    except Exception as e:
+        print("Bot error:", e)
+
+        bot.edit_message_text(
+            "❌ Unexpected error.",
+            message.chat.id,
+            status.message_id
+        )
+
+
+# =========================
+# Start bot
+# =========================
+
+if __name__ == "__main__":
+    print("🚀 Telegram bot starting...")
+    bot.infinity_polling(
+        timeout=60,
+        long_polling_timeout=5
+    )        except:
             pass
 
 if __name__ == '__main__':
